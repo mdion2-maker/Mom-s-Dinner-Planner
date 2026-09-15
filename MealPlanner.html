@@ -855,36 +855,46 @@ function aisleOf(line) {
   }
   return "Anything else";
 }
-function shoppingHtml() {
+/* Alcoholic drinks and cooking alcohol are left off the shopping list entirely. */
+const ALCOHOL_RX = new RegExp(
+  "\\b(wine|beer|ale|lager|stout|vodka|rum|whisk(e)?y|bourbon|tequila|brandy|sherry|vermouth|" +
+  "liqueur|cognac|champagne|prosecco|gin|kahlua|amaretto|baileys|grappa|marsala|sake|schnapps|" +
+  "kirsch|calvados|absinthe|mezcal|cachaca|pisco|cointreau|campari|grand marnier|triple sec|hard cider)\\b",
+  "i"
+);
+function isAlcoholic(line) { return ALCOHOL_RX.test(line); }
+function shoppingGroups() {
   const groups = {};
   plan.forEach(r => {
     r.ing.forEach(line => {
+      if (isAlcoholic(line)) return;
       const a = aisleOf(line);
-      (groups[a] = groups[a] || []).push({ line: line, from: r.t });
+      (groups[a] = groups[a] || []).push(line);
     });
   });
+  return groups;
+}
+function shoppingHtml() {
+  const groups = shoppingGroups();
   const order = AISLES.map(a => a[0]).concat(["Anything else"]);
   let h = "";
   order.forEach(a => {
     if (!groups[a]) return;
     const seen = {};
     h += '<div class="aisle"><h4>' + a + "</h4><ul>";
-    groups[a].forEach(it => {
-      const k = it.line.toLowerCase();
+    groups[a].forEach(line => {
+      const k = line.toLowerCase();
       if (seen[k]) return;
       seen[k] = 1;
-      h += "<li>" + esc(it.line) + " <span style=\"color:var(--ink-faint); font-size:13px\">&mdash; " + esc(it.from) + "</span></li>";
+      h += "<li>" + esc(line) + "</li>";
     });
     h += "</ul></div>";
   });
   return h || "<p>Pick some dinners first and the list will fill itself in.</p>";
 }
 function shoppingText() {
-  const lines = ["SHOPPING LIST", ""];
-  plan.forEach((r, i) => lines.push((i + 1) + ". " + r.t + " (" + r.tm + " min)"));
-  lines.push("");
-  const groups = {};
-  plan.forEach(r => r.ing.forEach(l => { const a = aisleOf(l); (groups[a] = groups[a] || []).push(l); }));
+  const lines = [];
+  const groups = shoppingGroups();
   AISLES.map(a => a[0]).concat(["Anything else"]).forEach(a => {
     if (!groups[a]) return;
     lines.push(a.toUpperCase());
@@ -892,7 +902,53 @@ function shoppingText() {
     groups[a].forEach(l => { const k = l.toLowerCase(); if (!seen[k]) { seen[k] = 1; lines.push("  [ ] " + l); } });
     lines.push("");
   });
-  return lines.join("\n");
+  return lines.join("\n").trim();
+}
+/* Prints just the ingredient checklist -- no dialog chrome, no meal titles --
+   using a hidden iframe so the page's own print stylesheet never applies. */
+function printShoppingList() {
+  const groups = shoppingGroups();
+  const order = AISLES.map(a => a[0]).concat(["Anything else"]);
+  let body = "";
+  order.forEach(a => {
+    if (!groups[a]) return;
+    const seen = {};
+    body += "<h2>" + esc(a) + "</h2><ul>";
+    groups[a].forEach(line => {
+      const k = line.toLowerCase();
+      if (seen[k]) return;
+      seen[k] = 1;
+      body += "<li>" + esc(line) + "</li>";
+    });
+    body += "</ul>";
+  });
+  if (!body) body = "<p>Pick some dinners first and the list will fill itself in.</p>";
+  const doc =
+    "<!doctype html><html><head><meta charset='utf-8'><title>Shopping list</title><style>" +
+    "body{font-family:Georgia,'Times New Roman',serif; color:#111; padding:24px; max-width:640px; margin:0 auto;}" +
+    "h1{font-size:20px; margin:0 0 18px;}" +
+    "h2{font-size:12px; letter-spacing:.09em; text-transform:uppercase; color:#555; margin:18px 0 6px; padding-bottom:4px; border-bottom:1px solid #ccc;}" +
+    "ul{list-style:none; margin:0 0 4px; padding:0;}" +
+    "li{padding:4px 0 4px 24px; position:relative; font-size:14px;}" +
+    "li::before{content:''; position:absolute; left:0; top:7px; width:13px; height:13px; border:1.3px solid #999; border-radius:2px;}" +
+    "</style></head><body><h1>Shopping list</h1>" + body + "</body></html>";
+  const frame = document.createElement("iframe");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const fdoc = frame.contentWindow.document;
+  fdoc.open(); fdoc.write(doc); fdoc.close();
+  frame.onload = () => {
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  };
+  const cleanup = () => { if (frame.parentNode) frame.parentNode.removeChild(frame); };
+  frame.contentWindow.onafterprint = cleanup;
+  setTimeout(cleanup, 5000);
 }
 
 /* -------------------------------------------------------------- chrome */
@@ -1121,7 +1177,7 @@ document.getElementById("copyShop").onclick = () => {
   if (navigator.clipboard) navigator.clipboard.writeText(txt).then(() => toast("List copied"), () => toast("Copy blocked - select the text instead"));
   else toast("Copy blocked - select the text instead");
 };
-document.getElementById("printShop").onclick = () => window.print();
+document.getElementById("printShop").onclick = () => printShoppingList();
 document.getElementById("printBtn").onclick = () => window.print();
 
 /* open with a real plan on screen */
