@@ -1,0 +1,40 @@
+# FOODS TO NEVER SHOW
+#
+# One food per line. Any recipe that mentions one of these anywhere
+# (title, ingredients, or instructions) is thrown out of the app.
+#
+# Lines starting with # are notes and are ignored.
+# Matching is whole-word, so "liver" will NOT hit "slivered almonds",
+# and plurals are handled automatically ("liver" also catches "livers").
+#
+# After changing this file, re-run:   build\Rebuild.ps1
+# ---------------------------------------------------------------------
+
+cottage cheese
+
+liver
+liverwurst
+braunschweiger
+foie gras
+chopped liver
+
+eggplant
+aubergine
+
+curry
+curried
+curry powder
+curry paste
+curry sauce
+vindaloo
+korma
+tikka
+masala
+garam masala
+madras
+
+# ---------------------------------------------------------------------
+# Add your own below this line, one per line. Examples:
+# blue cheese
+# anchovy
+# brussels sprouts
