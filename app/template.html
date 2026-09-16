@@ -353,10 +353,25 @@
 
   @media print {
     .masthead, .rail, .actionbar, .meal-side, .stage-head .btn-row, .tabs, .toast { display: none !important; }
-    body { background: #fff; font-size: 12pt; }
+    body { background: #fff; color: #000; font-size: 12pt; }
     .stage { padding: 0; }
     .meal { break-inside: avoid; box-shadow: none; border-color: #bbb; }
     .recipe { background: #fff; }
+
+    /* A dialog prints as its own top-layer surface, so hide the rest of the
+       page underneath it instead of printing both at once. */
+    body:has(dialog[open]) > .shell { display: none !important; }
+    dialog[open] {
+      position: static; display: block; width: auto; max-width: none; max-height: none;
+      overflow: visible; border: 0; box-shadow: none; background: #fff; color: #000; margin: 0;
+    }
+    dialog::backdrop { display: none; }
+    .dlg-head { position: static; border-bottom: 2px solid #000; background: #fff; }
+    .dlg-head button { display: none !important; }
+    dialog > p.hint { display: none !important; }
+    .dlg-body { overflow: visible; max-height: none; padding: 0; }
+    .aisle { break-inside: avoid; }
+    .cart-link { display: none !important; }
   }
 </style>
 
@@ -868,19 +883,51 @@ function aisleOf(line) {
   }
   return "Anything else";
 }
-/* Trim an ingredient line down to a plain product name so the Instacart
-   search actually finds something, e.g. "2 (14.5 oz) cans diced tomatoes,
-   drained" -> "diced tomatoes". */
+/* Trim an ingredient line down to a plain product name, e.g. "2 (14.5 oz)
+   cans diced tomatoes, drained" -> "diced tomatoes". Used both for the
+   Instacart search and for spotting the same ingredient written two ways
+   (e.g. "fajita flour tortillas" and "flour tortillas"). */
 const ING_FILLER = /^(cups?|tbsps?|tablespoons?|tsps?|teaspoons?|oz|ounces?|lbs?|pounds?|g|grams?|kg|ml|l|cloves?|cans?|jars?|bottles?|bags?|boxes?|packages?|slices?|pinch(?:es)?|dash(?:es)?|bunch(?:es)?|heads?|stalks?|sprigs?|large|small|medium|extra|fresh|chopped|diced|minced|sliced|shredded|grated|crushed|halved|of|to|taste)\b[\s,.\-]*/i;
-function instacartTerm(line) {
+function stripQtyAndFiller(line) {
   let t = line.replace(/\([^)]*\)/g, " ").replace(/,.*$/, "").trim();
   t = t.replace(/^[\d¼½¾⅓⅔⅛⅜⅝⅞\/.\-\s]+/, "").trim();
   let prev;
   do { prev = t; t = t.replace(ING_FILLER, "").trim(); } while (t !== prev && t.length > 2);
-  return t || line.trim();
+  return t;
+}
+function instacartTerm(line) {
+  return stripQtyAndFiller(line) || line.trim();
 }
 function instacartUrl(line) {
   return "https://www.instacart.com/store/s?k=" + encodeURIComponent(instacartTerm(line));
+}
+function coreWords(line) {
+  return stripQtyAndFiller(line).toLowerCase().split(/\s+/).filter(Boolean);
+}
+/* Same ingredient if the words match exactly, or if the shorter one (at
+   least 2 words, so we're not matching on one generic word) is the tail of
+   the longer one - "fajita flour tortillas" ends in "flour tortillas". */
+function sameIngredient(a, b) {
+  if (!a.length || !b.length) return false;
+  const shortArr = a.length <= b.length ? a : b;
+  const longArr = a.length <= b.length ? b : a;
+  if (shortArr.length === longArr.length) return shortArr.join(" ") === longArr.join(" ");
+  if (shortArr.length < 2) return false;
+  return longArr.slice(longArr.length - shortArr.length).join(" ") === shortArr.join(" ");
+}
+function mergeIngredientLines(items) {
+  const merged = [];
+  items.forEach(({ line, from }) => {
+    const words = coreWords(line);
+    const hit = merged.find(m => sameIngredient(m.words, words));
+    if (hit) {
+      hit.froms.add(from);
+      if (words.length < hit.words.length) { hit.display = line; hit.words = words; }
+    } else {
+      merged.push({ words: words, display: line, froms: new Set([from]) });
+    }
+  });
+  return merged;
 }
 function shoppingHtml() {
   const groups = {};
@@ -894,16 +941,13 @@ function shoppingHtml() {
   let h = "";
   order.forEach(a => {
     if (!groups[a]) return;
-    const seen = {};
     h += '<div class="aisle"><h4>' + a + "</h4><ul>";
-    groups[a].forEach(it => {
-      const k = it.line.toLowerCase();
-      if (seen[k]) return;
-      seen[k] = 1;
-      h += '<li><span class="ing-text">' + esc(it.line) +
-        ' <span style="color:var(--ink-faint); font-size:13px">&mdash; ' + esc(it.from) + "</span></span>" +
-        '<a class="cart-link" href="' + esc(instacartUrl(it.line)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for ' +
-        esc(it.line) + ' on Instacart">' + ICON.cart + "</a></li>";
+    mergeIngredientLines(groups[a]).forEach(it => {
+      const from = Array.from(it.froms).join(", ");
+      h += '<li><span class="ing-text">' + esc(it.display) +
+        ' <span style="color:var(--ink-faint); font-size:13px">&mdash; ' + esc(from) + "</span></span>" +
+        '<a class="cart-link" href="' + esc(instacartUrl(it.display)) + '" target="_blank" rel="noopener noreferrer" aria-label="Search for ' +
+        esc(it.display) + ' on Instacart">' + ICON.cart + "</a></li>";
     });
     h += "</ul></div>";
   });
@@ -914,12 +958,11 @@ function shoppingText() {
   plan.forEach((r, i) => lines.push((i + 1) + ". " + r.t + " (" + r.tm + " min)"));
   lines.push("");
   const groups = {};
-  plan.forEach(r => r.ing.forEach(l => { const a = aisleOf(l); (groups[a] = groups[a] || []).push(l); }));
+  plan.forEach(r => r.ing.forEach(l => { const a = aisleOf(l); (groups[a] = groups[a] || []).push({ line: l, from: r.t }); }));
   AISLES.map(a => a[0]).concat(["Anything else"]).forEach(a => {
     if (!groups[a]) return;
     lines.push(a.toUpperCase());
-    const seen = {};
-    groups[a].forEach(l => { const k = l.toLowerCase(); if (!seen[k]) { seen[k] = 1; lines.push("  [ ] " + l); } });
+    mergeIngredientLines(groups[a]).forEach(it => lines.push("  [ ] " + it.display));
     lines.push("");
   });
   return lines.join("\n");
