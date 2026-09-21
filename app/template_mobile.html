@@ -1,6 +1,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Mom's Dinner Planner</title>
+<meta name="theme-color" content="#F3F5F2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111615" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dinner Planner">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Source+Sans+3:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap">
 <style>
   :root {
@@ -238,7 +247,7 @@
     padding: 4px 10px; border-radius: 999px; background: var(--paper-deep); color: var(--ink-soft);
   }
   .pill svg { width: 14px; height: 14px; }
-  .pill-time { background: var(--accent-soft); color: var(--accent); }
+  .pill-time, .pill-serv { background: var(--accent-soft); color: var(--accent); }
   .pill-summer { background: var(--summer-soft); color: var(--summer); }
   .pill-winter { background: var(--winter-soft); color: var(--winter-ink); }
 
@@ -334,6 +343,15 @@
   }
   .cart-link svg { width: 18px; height: 18px; }
 
+  .serv-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin: 0 0 6px; }
+  .serv-label { font-family: "Source Sans 3", sans-serif; font-size: 12px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-faint); }
+  .serv-stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .stepper-btn { width: 46px; height: 44px; border: 0; background: var(--card); color: var(--ink); font-size: 22px; line-height: 1; }
+  .stepper-btn:disabled { opacity: .35; }
+  .stepper-btn:not(:disabled):active { background: var(--line-soft); }
+  .stepper-val { display: inline-block; min-width: 30px; text-align: center; font-size: 17px; font-weight: 600; }
+  .serv-note { flex-basis: 100%; font-size: 13px; color: var(--ink-faint); }
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(var(--navh) + env(safe-area-inset-bottom) + 14px); z-index: 95;
@@ -611,10 +629,109 @@ let S = defaults();
 let saved = [];
 let plan = [];
 let view = "plan";
+let servings = {}; // recipe id -> chosen serving count (2-5); unset means recipeBase(r)
+const BASE_SERVINGS = 4; // last-resort assumption, only used when nothing else tells us
+const baseInfoCache = new Map();
+/* Portion-sized ingredients (one steak, one chop, one breast...) are the best clue a
+   recipe gives about how many it feeds, when the recipe itself doesn't say. */
+const PORTION_RX = /\b(chicken breast(?:s)?(?: half(?:es|s)?)?|chicken thigh(?:s)?|chicken leg(?:s)?|drumstick(?:s)?|pork chop(?:s)?|lamb chop(?:s)?|steaks?|fillets?|filets?|patt(?:y|ies)|cutlets?|burgers?)\b/;
+const UNIT_AFTER_QTY = /^\s*(?:pounds?|lbs?\.?|ounces?|oz\.?|cups?|grams?|g|kg|kilograms?|ml|liters?|litres?|tablespoons?|tbsps?|teaspoons?|tsps?|cans?|packages?|pkgs?)\b/i;
+function guessServingsFromIngredients(ing) {
+  for (const line of ing) {
+    if (!PORTION_RX.test(line.toLowerCase())) continue;
+    const qty = parseLeadingQty(line);
+    /* "1 pound chicken breast" is a weight, not one portion -- only a bare count counts. */
+    if (qty && UNIT_AFTER_QTY.test(line.slice(qty.length))) continue;
+    if (qty && Number.isInteger(qty.value) && qty.value >= 1 && qty.value <= 10) {
+      return { n: qty.value, line: line };
+    }
+  }
+  return null;
+}
+/* Every recipe gets a definite, visible answer for "how many does this serve as written" --
+   never a silent, unstated guess. Custom recipes carry the count the person entered; built-in
+   ones get an estimate from a portion-sized ingredient when one is found, and only fall back
+   to a flatly-labeled default when neither is available. */
+function baseServingsInfo(r) {
+  if (baseInfoCache.has(r.i)) return baseInfoCache.get(r.i);
+  let info;
+  if (r.custom) {
+    const n = r.baseServings || BASE_SERVINGS;
+    info = { n: n, label: "You said this recipe serves " + n + " when you added it." };
+  } else {
+    const guess = guessServingsFromIngredients(r.ing);
+    if (guess) {
+      info = { n: guess.n, label: "Estimated to serve " + guess.n + ", based on \u201c" + guess.line + "\u201d." };
+    } else {
+      info = { n: BASE_SERVINGS, label: "This recipe doesn't say how many it serves, so " + BASE_SERVINGS + " was assumed." };
+    }
+  }
+  baseInfoCache.set(r.i, info);
+  return info;
+}
+function recipeBase(r) { return baseServingsInfo(r).n; }
+function getServings(r) { return servings[r.i] || recipeBase(r); }
+function setServings(id, n) {
+  const r = byId[id];
+  n = Math.max(2, Math.min(5, n));
+  if (r && n === recipeBase(r)) delete servings[id]; else servings[id] = n;
+  store();
+}
+
+/* ---------------------------------------------------- ingredient scaling */
+const QTY_FRACTIONS = "\u00bc\u00bd\u00be\u2153\u2154\u2155\u2156\u2157\u2158\u2159\u215a\u215b\u215c\u215d\u215e";
+const FRACTION_VALUES = {
+  "\u00bc": 1/4, "\u00bd": 1/2, "\u00be": 3/4,
+  "\u2153": 1/3, "\u2154": 2/3,
+  "\u2155": 1/5, "\u2156": 2/5, "\u2157": 3/5, "\u2158": 4/5,
+  "\u2159": 1/6, "\u215a": 5/6,
+  "\u215b": 1/8, "\u215c": 3/8, "\u215d": 5/8, "\u215e": 7/8
+};
+const NICE_FRACTIONS = [
+  { v: 0, sym: "" }, { v: 1/8, sym: "\u215b" }, { v: 1/4, sym: "\u00bc" },
+  { v: 1/3, sym: "\u2153" }, { v: 3/8, sym: "\u215c" }, { v: 1/2, sym: "\u00bd" },
+  { v: 5/8, sym: "\u215d" }, { v: 2/3, sym: "\u2154" }, { v: 3/4, sym: "\u00be" },
+  { v: 7/8, sym: "\u215e" }, { v: 1, sym: "" }
+];
+function parseLeadingQty(s) {
+  let m = s.match(new RegExp("^(\\d+\\s+)?([" + QTY_FRACTIONS + "])"));
+  if (m) return { value: (m[1] ? parseInt(m[1], 10) : 0) + FRACTION_VALUES[m[2]], length: m[0].length };
+  m = s.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)/);
+  if (m) return { value: parseInt(m[1], 10) + parseInt(m[2], 10) / parseInt(m[3], 10), length: m[0].length };
+  m = s.match(/^(\d+)\s*\/\s*(\d+)/);
+  if (m) return { value: parseInt(m[1], 10) / parseInt(m[2], 10), length: m[0].length };
+  m = s.match(/^\d+(?:\.\d+)?/);
+  if (m) return { value: parseFloat(m[0]), length: m[0].length };
+  return null;
+}
+function formatQty(value) {
+  if (value <= 0.02) return "0";
+  let whole = Math.floor(value + 1e-9);
+  let frac = value - whole;
+  let best = NICE_FRACTIONS[0], bestDiff = Math.abs(frac - best.v);
+  for (const f of NICE_FRACTIONS) {
+    const d = Math.abs(frac - f.v);
+    if (d < bestDiff) { bestDiff = d; best = f; }
+  }
+  if (best.v === 1) { whole += 1; best = NICE_FRACTIONS[0]; }
+  if (whole === 0 && best.sym) return best.sym;
+  if (best.sym) return whole + " " + best.sym;
+  return String(whole);
+}
+function scaleIngredientLine(line, mult) {
+  if (!mult || mult === 1) return line;
+  const qty = parseLeadingQty(line);
+  if (!qty) return line;
+  return formatQty(qty.value * mult) + line.slice(qty.length);
+}
+function scaledIngredients(r) {
+  const mult = getServings(r) / recipeBase(r);
+  return r.ing.map(l => scaleIngredientLine(l, mult));
+}
 
 const LS = "momDinnerPlanner.v1";
 function store() {
-  try { localStorage.setItem(LS, JSON.stringify({ S: S, saved: saved, plan: plan.map(r => r.i) })); }
+  try { localStorage.setItem(LS, JSON.stringify({ S: S, saved: saved, plan: plan.map(r => r.i), servings: servings })); }
   catch (e) { /* private window or blocked storage: the app still works */ }
 }
 function restore() {
@@ -625,6 +742,7 @@ function restore() {
     if (o && o.S) S = Object.assign(defaults(), o.S);
     if (o && Array.isArray(o.saved)) saved = o.saved;
     if (o && Array.isArray(o.plan)) plan = o.plan.map(id => byId[id]).filter(Boolean);
+    if (o && o.servings && typeof o.servings === "object") servings = o.servings;
   } catch (e) { /* ignore unreadable storage */ }
 }
 
@@ -738,6 +856,7 @@ function esc(s) {
 const ICON = {
   hot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 21c3.3 0 6-2.5 6-5.6 0-3.9-4-5.3-3.2-9.4-2.6.6-4.4 2.6-4.4 4.7 0 1.6.9 2.3.9 3.3 0 1-.8 1.8-1.8 1.8s-1.7-.8-1.7-2c-1 1-1.8 2.4-1.8 4 0 3 2.7 5.2 6 5.2z"/></svg>',
   cold: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9"/></svg>',
+  people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.2 19.5c.4-3.3 2.7-5.2 5.8-5.2s5.4 1.9 5.8 5.2"/><path d="M15.6 5.6a3.1 3.1 0 0 1 0 5.8M17.6 14.6c1.8.7 3 2.3 3.2 4.9"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.2 2"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 20s-7.4-4.4-7.4-9.4A4.2 4.2 0 0 1 12 8.2a4.2 4.2 0 0 1 7.4 2.4C19.4 15.6 12 20 12 20z"/></svg>',
   heartOn: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20s-7.4-4.4-7.4-9.4A4.2 4.2 0 0 1 12 8.2a4.2 4.2 0 0 1 7.4 2.4C19.4 15.6 12 20 12 20z"/></svg>',
@@ -751,8 +870,15 @@ function meter(bn) {
   for (let i = 0; i < 5; i++) h += '<i' + (i < on ? ' class="on"' : '') + '></i>';
   return h + "</span>";
 }
+/* Time and servings always sit side by side, so a printed page shows both at a glance. */
+function servPill(r) {
+  return '<span class="pill pill-serv mono" data-serv-pill="' + r.i + '">' + ICON.people + "Serves " + getServings(r) + "</span>";
+}
+function syncServPills(r) {
+  document.querySelectorAll('[data-serv-pill="' + r.i + '"]').forEach(el => { el.outerHTML = servPill(r); });
+}
 function pills(r) {
-  let h = '<span class="pill pill-time mono">' + ICON.clock + r.tm + " min</span>";
+  let h = '<span class="pill pill-time mono">' + ICON.clock + r.tm + " min</span>" + servPill(r);
   h += '<span class="pill">' + (r.tc === "hot" ? ICON.hot + "Hot" : ICON.cold + "Cold") + "</span>";
   h += '<span class="pill">' + esc(r.b) + "</span>";
   if (r.se === "summer") h += '<span class="pill pill-summer">Summer</span>';
@@ -767,9 +893,23 @@ function boneLine(r) {
   return '<div class="bone">' + meter(r.bn) +
     '<span class="bone-label">Bones: ' + why + "</span></div>";
 }
+function servingsCtrl(r) {
+  const n = getServings(r);
+  const info = baseServingsInfo(r);
+  return '<div class="serv-row" data-rid="' + r.i + '">' +
+    '<span class="serv-label">Servings</span>' +
+    '<div class="serv-stepper">' +
+      '<button type="button" class="stepper-btn" data-serv="dec" aria-label="Fewer servings"' + (n <= 2 ? " disabled" : "") + '>&minus;</button>' +
+      '<span class="stepper-val mono">' + n + '</span>' +
+      '<button type="button" class="stepper-btn" data-serv="inc" aria-label="More servings"' + (n >= 5 ? " disabled" : "") + '>+</button>' +
+    '</div>' +
+    '<span class="serv-note">' + esc(info.label) + " Ingredients below are scaled to " + n + ".</span>" +
+  '</div>';
+}
 function recipeHtml(r) {
-  let h = '<div class="recipe"><h4>' + r.ing.length + " ingredients</h4><ul>";
-  r.ing.forEach(x => { h += "<li>" + esc(x) + "</li>"; });
+  const ing = scaledIngredients(r);
+  let h = '<div class="recipe">' + servingsCtrl(r) + "<h4>" + ing.length + " ingredients</h4><ul>";
+  ing.forEach(x => { h += "<li>" + esc(x) + "</li>"; });
   h += "</ul><h4>" + r.st.length + " steps &middot; " + r.p + " min prep &middot; " + r.c + " min cooking</h4><ol>";
   r.st.forEach(x => { h += "<li>" + esc(x) + "</li>"; });
   return h + "</ol></div>";
@@ -819,7 +959,7 @@ function rowHtml(r) {
   const isSaved = saved.indexOf(r.i) >= 0;
   return '<div class="row" data-id="' + r.i + '">' +
     '<div class="rt"><strong>' + esc(r.t) + "</strong><span>" + esc(r.b) + " &middot; " + esc(r.pr) +
-      " &middot; " + (r.tc === "hot" ? "hot" : "cold") + "</span></div>" +
+      " &middot; " + (r.tc === "hot" ? "hot" : "cold") + " &middot; " + r.tm + " min &middot; serves " + getServings(r) + "</span></div>" +
     '<div class="rm">' + meter(r.bn) +
       '<button class="mini" type="button" data-act="open">Recipe</button>' +
       '<button class="mini" type="button" data-act="save" aria-pressed="' + isSaved + '" aria-label="Save ' + esc(r.t) + '">' +
@@ -924,7 +1064,7 @@ function mergeIngredientLines(items) {
 function shoppingHtml() {
   const groups = {};
   plan.forEach(r => {
-    r.ing.forEach(line => {
+    scaledIngredients(r).forEach(line => {
       const a = aisleOf(line);
       (groups[a] = groups[a] || []).push({ line: line, from: r.t });
     });
@@ -950,7 +1090,7 @@ function shoppingText() {
   plan.forEach((r, i) => lines.push((i + 1) + ". " + r.t + " (" + r.tm + " min)"));
   lines.push("");
   const groups = {};
-  plan.forEach(r => r.ing.forEach(l => { const a = aisleOf(l); (groups[a] = groups[a] || []).push({ line: l, from: r.t }); }));
+  plan.forEach(r => scaledIngredients(r).forEach(l => { const a = aisleOf(l); (groups[a] = groups[a] || []).push({ line: l, from: r.t }); }));
   AISLES.map(a => a[0]).concat(["Anything else"]).forEach(a => {
     if (!groups[a]) return;
     lines.push(a.toUpperCase());
@@ -1185,6 +1325,17 @@ function listClick(e) {
 }
 document.getElementById("browseList").onclick = listClick;
 document.getElementById("savedList").onclick = listClick;
+document.getElementById("recipeBody").onclick = e => {
+  const btn = e.target.closest("button[data-serv]");
+  if (!btn) return;
+  const r = byId[btn.closest("[data-rid]").dataset.rid];
+  if (!r) return;
+  setServings(r.i, getServings(r) + (btn.dataset.serv === "inc" ? 1 : -1));
+  document.getElementById("recipeBody").innerHTML =
+    '<div class="meta" style="margin-bottom:14px">' + pills(r) + "</div>" +
+    (r.d ? "<p>" + esc(r.d) + "</p>" : "") + boneLine(r) + recipeHtml(r);
+  syncServPills(r);
+};
 document.getElementById("closeRecipe").onclick = () => closeSheet("recipeSheet");
 
 document.getElementById("shopBtn").onclick = () => {
@@ -1204,4 +1355,10 @@ document.getElementById("printBtn").onclick = () => window.print();
 if (!plan.length) buildPlan();
 renderPlan();
 setView("plan");
+
+/* Lets the app open without a signal after the first visit. Only when served
+   over http(s) -- a double-clicked file can't have a service worker. */
+if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
+  navigator.serviceWorker.register("sw.js").catch(() => { /* fine: the app works without it */ });
+}
 </script>

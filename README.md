@@ -22,9 +22,15 @@ How it works, in order:
    things to skip (meat-free, no dairy, no wheat, no nuts, no pork, no shellfish).
 4. **Press "Pick my dinners."**
 
-Each meal card shows the total time, whether it's hot or cold, the kind of dish,
-a bone-strength meter with the reason for it, and buttons to see the recipe,
-swap that one meal for another, or save it with a heart. **Shopping list**
+Each meal card shows the total time and **how many it serves** side by side on
+the same line (so both are easy to spot on a printout), whether it's hot or
+cold, the kind of dish, a bone-strength meter with the reason for it, and
+buttons to see the recipe, swap that one meal for another, or save it with a
+heart. Open a recipe and use the **− / +** under *Servings* to change how many
+people it is for; the number on the card, the ingredient amounts, and the
+shopping list all follow. (The recipe collection doesn't say how many each dish
+serves, so the number is estimated from portion-sized ingredients like "4 chicken
+breasts", and otherwise assumed to be 4. The recipe says which.) **Shopping list**
 gathers every ingredient from the plan, grouped by supermarket aisle, with a
 copy and a print button. **Browse all** lists everything matching the filters,
 and **Saved** keeps the hearts.
@@ -32,6 +38,33 @@ and **Saved** keeps the hearts.
 Filters, saved meals, and the current plan are remembered in the browser, so the
 app opens where it was left. Any filter that is switched on is named in the
 green strip above the "Pick my dinners" button, with a **Clear** button.
+
+## On an iPhone
+
+The `docs` folder is a phone version of the planner that can be installed like a
+normal app: it gets its own icon, opens full screen, and keeps working with no
+signal after the first time it has been opened. It has the same filters, plan,
+recipes, servings, saved hearts and shopping list as the desktop app, laid out
+for a thumb (bottom tab bar, big buttons).
+
+**Publishing it once** (needs a web address, because an iPhone can't open a file
+sitting on a PC): on GitHub, open the repository → *Settings* → *Pages* →
+*Build and deployment* → *Deploy from a branch* → branch `main`, folder `/docs`
+→ *Save*. After a minute or two it appears at
+`https://<github-username>.github.io/<repository-name>/`. Anyone with that
+address can use it.
+
+**Putting it on the phone:** open that address in **Safari** (it has to be
+Safari for this), tap the *Share* button (square with an arrow), scroll down and
+tap **Add to Home Screen**, then **Add**. From then on it opens from the home
+screen like any other app. The home-screen copy keeps its own saved hearts and
+settings, separate from the ones in Safari.
+
+After changing `app\template_mobile.html` (or the recipes), run
+`python build\build_mobile.py`; it rewrites `docs` and `MealPlanner.mobile.html`,
+and phones pick up the new version the next time they're online.
+`MealPlanner.mobile.html` on its own is the same app as a single file for trying
+it on a PC; it can't be installed on a phone.
 
 ## Never showing a food
 
@@ -128,6 +161,10 @@ which is the quickest way to check a new exclusion did what you wanted.
 | --- | --- |
 | `MealPlanner.html` | The app. Data is baked in; this is the only file needed to use it. |
 | `app\template.html` | The app without the data — edit this, not `MealPlanner.html`. |
+| `app\template_mobile.html` | The phone version without the data — edit this, not `MealPlanner.mobile.html` or `docs\index.html`. |
+| `app\pwa\` | What lets the phone version be installed: icons, manifest, offline support. |
+| `docs\` | The phone version, ready to publish (built by `build\build_mobile.py`). |
+| `build\build_mobile.py` | Builds `MealPlanner.mobile.html` and `docs\`. |
 | `build\exclusions.txt` | Foods to remove. Edit freely. |
 | `build\Builder.cs` | Every rule: time model, dish types, seasons, bone scoring, hard-to-find list. |
 | `build\Csv.cs` | Streams the 300 MB CSV out of the zip. |
