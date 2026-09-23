@@ -523,6 +523,9 @@
 
   <section class="view no-bar" id="view-browse" hidden>
     <div class="stage-head"><div><h2>Browse all</h2><p id="browseSub">Everything that fits your filters.</p></div></div>
+    <div style="margin-bottom:12px">
+      <input class="field" id="browseSearch" placeholder="Search by name or ingredient&hellip;" aria-label="Search all dinners by name or ingredient">
+    </div>
     <div class="sortrow">
       <span class="hint" style="margin:0">Sort</span>
       <select class="field" id="sortBy">
@@ -1182,6 +1185,7 @@ function syncControls() {
   document.getElementById("dPork").checked = S.pork;
   document.getElementById("dShell").checked = S.shell;
   document.getElementById("search").value = S.search;
+  document.getElementById("browseSearch").value = S.search;
   document.getElementById("sortBy").value = S.sortBy;
   renderChips();
 }
@@ -1264,7 +1268,16 @@ document.getElementById("proteinChips").onclick = e => {
  ["dGluten", "gluten"], ["dNut", "nut"], ["dPork", "pork"], ["dShell", "shell"]].forEach(([id, key]) => {
   document.getElementById(id).onchange = e => { S[key] = e.target.checked; refresh(); };
 });
-document.getElementById("search").oninput = e => { S.search = e.target.value; refresh(); };
+document.getElementById("search").oninput = e => {
+  S.search = e.target.value;
+  document.getElementById("browseSearch").value = S.search;
+  refresh();
+};
+document.getElementById("browseSearch").oninput = e => {
+  S.search = e.target.value;
+  document.getElementById("search").value = S.search;
+  refresh();
+};
 document.getElementById("sortBy").onchange = e => { S.sortBy = e.target.value; refresh(); };
 
 function addBlocked() {

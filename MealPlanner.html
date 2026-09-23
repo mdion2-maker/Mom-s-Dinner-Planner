@@ -572,6 +572,9 @@
           </label>
         </div>
       </div>
+      <div style="margin-bottom:14px; max-width:420px">
+        <input class="field" id="browseSearch" placeholder="Search by name or ingredient&hellip;" aria-label="Search all dinners by name or ingredient">
+      </div>
       <div class="browse" id="browseList"></div>
     </section>
 
@@ -1443,6 +1446,7 @@ function syncControls() {
   document.getElementById("dPork").checked = S.pork;
   document.getElementById("dShell").checked = S.shell;
   document.getElementById("search").value = S.search;
+  document.getElementById("browseSearch").value = S.search;
   document.getElementById("sortBy").value = S.sortBy;
   renderChips();
 }
@@ -1544,7 +1548,16 @@ document.getElementById("proteinChips").onclick = e => {
  ["dGluten", "gluten"], ["dNut", "nut"], ["dPork", "pork"], ["dShell", "shell"]].forEach(([id, key]) => {
   document.getElementById(id).onchange = e => { S[key] = e.target.checked; refresh(); };
 });
-document.getElementById("search").oninput = e => { S.search = e.target.value; refresh(); };
+document.getElementById("search").oninput = e => {
+  S.search = e.target.value;
+  document.getElementById("browseSearch").value = S.search;
+  refresh();
+};
+document.getElementById("browseSearch").oninput = e => {
+  S.search = e.target.value;
+  document.getElementById("search").value = S.search;
+  refresh();
+};
 document.getElementById("sortBy").onchange = e => { S.sortBy = e.target.value; refresh(); };
 
 function addBlocked() {
