@@ -735,7 +735,7 @@ function guessServingsFromIngredients(ing) {
 }
 /* Every recipe gets a definite, visible answer for "how many does this serve as written" --
    never a silent, unstated guess. Custom recipes carry the count the person entered; built-in
-   ones get an estimate from a portion-sized ingredient when one is found, and only fall back
+   ones use the count the source states (sv) when it gives one, otherwise an estimate from a portion-sized ingredient when one is found, and only fall back
    to a flatly-labeled default when neither is available. */
 function baseServingsInfo(r) {
   if (baseInfoCache.has(r.i)) return baseInfoCache.get(r.i);
@@ -743,6 +743,8 @@ function baseServingsInfo(r) {
   if (r.custom) {
     const n = r.baseServings || BASE_SERVINGS;
     info = { n: n, label: "You said this recipe serves " + n + " when you added it." };
+  } else if (r.sv) {
+    info = { n: r.sv, label: "The recipe says it serves " + r.sv + "." };
   } else {
     const guess = guessServingsFromIngredients(r.ing);
     if (guess) {

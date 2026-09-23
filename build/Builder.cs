@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -38,6 +38,7 @@ namespace Dish
         public bool OnePot;
         public bool Fried;
         public int Quality;
+        public int Servings;         // as stated by the source; 0 = not stated
     }
 
     public static class Builder
@@ -106,6 +107,94 @@ namespace Dish
                 }
             }
             return outp.ToArray();
+        }
+
+        // ------------------------------------------------- second source (archive2.zip)
+        // recipes.csv there stores ingredients as one comma-joined line:
+        //   "2 stalks celery, chopped, 1  carrot, diced,   salt and pepper to taste"
+        // A new ingredient starts where a comma is followed by an amount, or by the run of
+        // spaces the file leaves where an amount is missing. "celery, chopped" stays whole.
+        // (¼-¾ and ⅐-⅞ are the fraction characters: one-half, one-third, ...)
+        static Regex IngSplit = new Regex(@",(?= ?[\d¼-¾⅐-⅞]|  +)", RegexOptions.Compiled);
+
+        public static string[] SplitIngredientLine(string s)
+        {
+            List<string> outp = new List<string>();
+            if (string.IsNullOrEmpty(s)) return outp.ToArray();
+            foreach (string part in IngSplit.Split(s))
+            {
+                string p = Regex.Replace(part, @"\s+", " ").Trim();
+                if (p.Length > 0) outp.Add(p);
+            }
+            return outp.ToArray();
+        }
+
+        public static string[] SplitLines(string s)
+        {
+            List<string> outp = new List<string>();
+            if (string.IsNullOrEmpty(s)) return outp.ToArray();
+            foreach (string line in s.Split('\n'))
+            {
+                string p = line.Trim();
+                if (p.Length > 0) outp.Add(p);
+            }
+            return outp.ToArray();
+        }
+
+        /// <summary>Python-style list of strings, either quote style: ['a', "b's"].</summary>
+        public static string[] ParsePyList(string s)
+        {
+            List<string> outp = new List<string>();
+            if (string.IsNullOrEmpty(s)) return outp.ToArray();
+            StringBuilder sb = new StringBuilder();
+            char quote = '\0';
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (quote != '\0')
+                {
+                    if (c == '\\' && i + 1 < s.Length) sb.Append(s[++i]);
+                    else if (c == quote) { quote = '\0'; outp.Add(sb.ToString().Trim()); sb.Length = 0; }
+                    else sb.Append(c);
+                }
+                else if (c == '\'' || c == '"') quote = c;
+            }
+            return outp.ToArray();
+        }
+
+        /// <summary>test_recipes.csv ingredients: [{'quantity': '2', 'unit': 'cups', 'name': 'rice'}, ...]
+        /// The flat list alternates key, value, key, value, so each dict becomes "2 cups rice".</summary>
+        public static string[] ParsePyIngredients(string s)
+        {
+            List<string> outp = new List<string>();
+            string[] tok = ParsePyList(s);
+            string qty = "", unit = "";
+            for (int i = 0; i + 1 < tok.Length; i += 2)
+            {
+                if (tok[i] == "quantity") qty = tok[i + 1];
+                else if (tok[i] == "unit") unit = tok[i + 1];
+                else if (tok[i] == "name")
+                {
+                    string line = Regex.Replace(qty + " " + unit + " " + tok[i + 1], @"\s+", " ").Trim();
+                    if (line.Length > 0) outp.Add(line);
+                    qty = ""; unit = "";
+                }
+            }
+            return outp.ToArray();
+        }
+
+        /// <summary>"1 hrs 30 mins" -> 90. 0 when blank or unreadable.</summary>
+        public static int StatedMinutes(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return 0;
+            int total = 0;
+            foreach (Match m in Regex.Matches(s.ToLowerInvariant(), @"(\d+)\s*(day|hr|hour|min)"))
+            {
+                int v = int.Parse(m.Groups[1].Value);
+                string u = m.Groups[2].Value;
+                total += u == "day" ? v * 1440 : (u == "min" ? v : v * 60);
+            }
+            return total;
         }
 
         // ------------------------------------------------------------ time model
@@ -258,7 +347,7 @@ namespace Dish
             "bread machine","sourdough starter","kombucha","liqueur","moonshine",
             "baby food","dog treat","playdough","brine","mulled","frappe","spritzer","mocktail",
             "chocolate","cocoa","marshmallow","butterscotch","praline","fritter","churro","beignet",
-            "meringue","ganache","streusel","turnover","sweet roll","deviled egg",
+            "meringue","ganache","curd","streusel","turnover","sweet roll","deviled egg",
             "smore","s'more","cream puff","eclair","kolache","rugelach","halva","baklava","funnel"
         };
 
@@ -375,7 +464,9 @@ namespace Dish
             "Quick Bread","Biscuits","Scones","Doughnuts","Pastries","Jams And Jellies","Smoothies",
             "Cookies For Kids","Trifle","Fruit Desserts","Puddings","Custards And Puddings","Snacks",
             "Salad Dressings","Condiments","Sauces And Condiments","Spices And Seasonings","Fruit Salads",
-            "Appetizers And Snacks","Baking","Dessert Sauces","Herbs And Spices"
+            "Appetizers And Snacks","Baking","Dessert Sauces","Herbs And Spices",
+            // top-level sections as archive2.zip names them
+            "Drinks Recipes","Bread","Quick Bread Recipes"
         };
 
         // Ingredients a home cook in North America cannot reliably buy at a normal supermarket.
@@ -633,7 +724,7 @@ namespace Dish
                 if (Has(scanAll, userExclude[i])) { reject = "excluded:" + userExclude[i]; return null; }
 
             // 1b. nothing spicy: the archive's label, plus anything with real heat in it
-            if (tastes != null && tastes.ToLowerInvariant().Contains("spicy")) { reject = "spicy-label"; return null; }
+            if (UseSpicyLabel && tastes != null && tastes.ToLowerInvariant().Contains("spicy")) { reject = "spicy-label"; return null; }
             for (int i = 0; i < HotStuff.Length; i++)
                 if (Has(scanAll, HotStuff[i])) { reject = "spicy-heat:" + HotStuff[i]; return null; }
 
@@ -648,8 +739,11 @@ namespace Dish
             // sweet-leaning guard: dessert titles are not always obvious ("No Cholesterol Chocolate Chip")
             int sweet = CountAny(ingText, Sweeteners);
             int savory = CountAny(ingText, SavoryAnchors);
-            bool realProtein = HasAny(titleIng, RealProtein);
+            // a cup of chicken broth doesn't make rice a chicken dinner
+            bool realProtein = HasAny(Regex.Replace(titleIng, @"(chicken|beef|turkey|fish|seafood|shrimp) (broth|stock|bouillon|base)", "$2"), RealProtein);
             if (sweet >= 2 && savory <= 2 && !realProtein) { reject = "baked-good"; return null; }
+            // honey-and-fruit on bread ("Creamy Kiwi Sandwich") is a snack, not dinner
+            if (sweet >= 1 && savory <= 1 && !realProtein) { reject = "sweet-snack"; return null; }
             if (Has(ingText, "all-purpose flour") && sweet >= 1 && savory <= 3 && !realProtein)
             { reject = "baked-good"; return null; }
 
@@ -924,6 +1018,7 @@ namespace Dish
             sb.Append(",\"tp\":").Append(r.Top);
             sb.Append(",\"op\":").Append(r.OnePot ? "1" : "0");
             sb.Append(",\"fr\":").Append(r.Fried ? "1" : "0");
+            if (r.Servings > 0) sb.Append(",\"sv\":").Append(r.Servings);
             sb.Append(",\"ing\":").Append(Arr(r.Ingredients));
             sb.Append(",\"st\":").Append(Arr(r.Steps));
             sb.Append("}");

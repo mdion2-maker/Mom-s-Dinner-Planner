@@ -1,14 +1,22 @@
 # Rebuilds the recipe database used by MealPlanner.html
 #
-#   Reads   : archive.zip  (recipes_extended.csv)  +  build\exclusions.txt
+#   Reads   : archive.zip  (recipes_extended.csv), archive2.zip (recipes.csv,
+#             test_recipes.csv; optional)  +  build\exclusions.txt
 #   Writes  : data\recipes.json   and   MealPlanner.html (data is embedded)
 #
 # Run it by right-clicking this file and choosing "Run with PowerShell",
 # or from a terminal:   powershell -ExecutionPolicy Bypass -File build\Rebuild.ps1
+#
+# -AddToExisting leaves every recipe already in data\recipes.json untouched and only adds
+# the ones from archive2.zip. The current recipes were built on 2026-09-15 with looser
+# rules than Builder.cs has now, so a full rebuild would remove about half of them.
 
 param(
     [int]$MaxRecipes = 5000,
-    [switch]$Explain      # print sample rejections + accepted samples for tuning
+    [switch]$Explain,     # print sample rejections + accepted samples for tuning
+    [switch]$IgnoreSpicyLabel, # drop only real heat, not the archive's noisy "spicy" tag
+    [switch]$AddToExisting     # keep data\recipes.json exactly as is; only add new recipes
+                               # from archive2.zip that it doesn't already have
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +31,7 @@ if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | O
 Write-Host "Compiling recipe filters..." -ForegroundColor Cyan
 $sources = @((Join-Path $PSScriptRoot 'Csv.cs'), (Join-Path $PSScriptRoot 'Builder.cs'))
 Add-Type -Path $sources -ReferencedAssemblies 'System.IO.Compression', 'System.IO.Compression.FileSystem'
+[Dish.Builder]::UseSpicyLabel = -not $IgnoreSpicyLabel
 
 # ---- foods to exclude -------------------------------------------------
 [string[]]$exclude = @(Get-Content (Join-Path $PSScriptRoot 'exclusions.txt') |
@@ -32,50 +41,99 @@ Add-Type -Path $sources -ReferencedAssemblies 'System.IO.Compression', 'System.I
     Select-Object -Unique)
 Write-Host ("Excluding {0} foods: {1}" -f $exclude.Count, ($exclude -join ', ')) -ForegroundColor Yellow
 
-# ---- stream the CSV ---------------------------------------------------
-Write-Host "Reading recipes from archive.zip (this takes a couple of minutes)..." -ForegroundColor Cyan
-$arch = $null
-$csv = [Dish.CsvReader]::FromZip($zip, 'recipes_extended.csv', [ref]$arch)
-$header = $csv.ReadRow()
-$idx = @{}
-for ($i = 0; $i -lt $header.Length; $i++) { $idx[$header[$i]] = $i }
-
-$cTitle = $idx['recipe_title']; $cCat = $idx['category']; $cDesc = $idx['description']
-$cIng = $idx['ingredients']; $cDir = $idx['directions']
-$cSub = $idx['subcategory']; $cTastes = $idx['tastes']
-$maxCol = @($cTitle, $cCat, $cDesc, $cIng, $cDir, $cSub, $cTastes) | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum
-
 $kept = New-Object 'System.Collections.Generic.List[Dish.Recipe]'
 $rejectCounts = @{}
 $rejectSamples = @{}
 $rows = 0
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-while ($true) {
-    $row = $csv.ReadRow()
-    if ($null -eq $row) { break }
-    if ($row.Length -le $maxCol) { continue }
-    $rows++
-    if ($rows % 5000 -eq 0) {
-        Write-Host ("  {0,6} read, {1,5} kept  ({2:N0}s)" -f $rows, $kept.Count, $sw.Elapsed.TotalSeconds)
+# Every source goes through the same rules. $stated is the source's own total time in
+# minutes (0 if it gives none); the longer of that and our own estimate wins, so a
+# recipe the source itself calls an hour never sneaks in as "25 minutes".
+function Add-Candidate($title, $cat, $sub, $desc, $ings, $steps, $tastes, [int]$stated = 0, [int]$serves = 0) {
+    $script:rows++
+    if ($script:rows % 5000 -eq 0) {
+        Write-Host ("  {0,6} read, {1,5} kept  ({2:N0}s)" -f $script:rows, $kept.Count, $sw.Elapsed.TotalSeconds)
     }
-
-    $ings = [Dish.Builder]::ParseArray($row[$cIng])
-    $steps = [Dish.Builder]::ParseArray($row[$cDir])
     $reason = ''
-    $r = [Dish.Builder]::Build($row[$cTitle], $row[$cCat], $row[$cSub], $row[$cDesc], $ings, $steps,
-                               $row[$cTastes], $exclude, [ref]$reason)
+    $r = [Dish.Builder]::Build($title, $cat, $sub, $desc, $ings, $steps, $tastes, $exclude, [ref]$reason)
+    if ($null -ne $r -and $stated -gt 45) { $r = $null; $reason = 'over-45-stated' }
     if ($null -eq $r) {
         $key = ($reason -split ':')[0]
         if ($rejectCounts.ContainsKey($key)) { $rejectCounts[$key]++ } else { $rejectCounts[$key] = 1 }
         if ($Explain -and -not $rejectSamples.ContainsKey($reason) -and $rejectSamples.Count -lt 400) {
-            $rejectSamples[$reason] = $row[$cTitle]
+            $rejectSamples[$reason] = $title
         }
-        continue
+        return
     }
+    if ($stated -gt $r.TotalMin) { $r.PrepMin += $stated - $r.TotalMin; $r.TotalMin = $stated }
+    if ($serves -ge 1 -and $serves -le 12) { $r.Servings = $serves }
     $kept.Add($r)
 }
-$csv.Dispose(); $arch.Dispose()
+
+function Open-Csv($zipPath, $entry) {
+    $a = $null
+    $c = [Dish.CsvReader]::FromZip($zipPath, $entry, [ref]$a)
+    $h = $c.ReadRow()
+    $ix = @{}
+    for ($i = 0; $i -lt $h.Length; $i++) { $ix[$h[$i]] = $i }
+    return @{ Csv = $c; Arch = $a; Idx = $ix; Max = ($ix.Values | Measure-Object -Maximum).Maximum }
+}
+
+# ---- source 1: archive.zip (recipes_extended.csv) --------------------
+if (-not $AddToExisting) {
+Write-Host "Reading recipes from archive.zip (this takes a couple of minutes)..." -ForegroundColor Cyan
+$src = Open-Csv $zip 'recipes_extended.csv'
+$idx = $src.Idx
+$cTitle = $idx['recipe_title']; $cCat = $idx['category']; $cDesc = $idx['description']
+$cIng = $idx['ingredients']; $cDir = $idx['directions']
+$cSub = $idx['subcategory']; $cTastes = $idx['tastes']
+while ($true) {
+    $row = $src.Csv.ReadRow()
+    if ($null -eq $row) { break }
+    if ($row.Length -le $src.Max) { continue }
+    Add-Candidate $row[$cTitle] $row[$cCat] $row[$cSub] $row[$cDesc] `
+        ([Dish.Builder]::ParseArray($row[$cIng])) ([Dish.Builder]::ParseArray($row[$cDir])) $row[$cTastes]
+}
+$src.Csv.Dispose(); $src.Arch.Dispose()
+}
+
+# ---- source 2: archive2.zip (recipes.csv + test_recipes.csv) ---------
+# A smaller Allrecipes download that states servings and times. Optional.
+$zip2 = Join-Path $root 'archive2.zip'
+if (Test-Path $zip2) {
+    Write-Host "Reading recipes from archive2.zip..." -ForegroundColor Cyan
+    $src = Open-Csv $zip2 'recipes.csv'
+    $ix = $src.Idx
+    while ($true) {
+        $row = $src.Csv.ReadRow()
+        if ($null -eq $row) { break }
+        if ($row.Length -le $src.Max) { continue }
+        # cuisine_path looks like /Main Dishes/Chicken/ ; its first part is the section
+        $path = $row[$ix['cuisine_path']].Trim('/')
+        $sect = ($path -split '/')[0]
+        $sv = 0; [void][int]::TryParse($row[$ix['servings']], [ref]$sv)
+        Add-Candidate $row[$ix['recipe_name']] $sect $path '' `
+            ([Dish.Builder]::SplitIngredientLine($row[$ix['ingredients']])) `
+            ([Dish.Builder]::SplitLines($row[$ix['directions']])) $null `
+            ([Dish.Builder]::StatedMinutes($row[$ix['total_time']])) $sv
+    }
+    $src.Csv.Dispose(); $src.Arch.Dispose()
+
+    $src = Open-Csv $zip2 'test_recipes.csv'
+    $ix = $src.Idx
+    while ($true) {
+        $row = $src.Csv.ReadRow()
+        if ($null -eq $row) { break }
+        if ($row.Length -le $src.Max) { continue }
+        $sv = 0; [void][int]::TryParse($row[$ix['Servings']], [ref]$sv)
+        Add-Candidate $row[$ix['Name']] '' '' '' `
+            ([Dish.Builder]::ParsePyIngredients($row[$ix['Ingredients']])) `
+            ([Dish.Builder]::ParsePyList($row[$ix['Directions']])) $null `
+            ([Dish.Builder]::StatedMinutes($row[$ix['Total Time']])) $sv
+    }
+    $src.Csv.Dispose(); $src.Arch.Dispose()
+}
 Write-Host ("Read {0} recipes in {1:N0}s; {2} passed every rule." -f $rows, $sw.Elapsed.TotalSeconds, $kept.Count) -ForegroundColor Green
 
 "" ; "--- why recipes were dropped ---"
@@ -151,18 +209,57 @@ $final | Get-Random -Count ([math]::Min(25, $final.Count)) | ForEach-Object {
 }
 
 # ---- write recipes.json ----------------------------------------------
-$id = 0
+# Keep each recipe's number from the last build: the app remembers saved hearts, the
+# current plan and serving choices by number, so renumbering would scramble them.
+$oldIds = @{}
+$nextId = 0
+$prevObjs = @()
+if (Test-Path $outJson) {
+    $prev = [System.IO.File]::ReadAllText($outJson)
+    foreach ($m in [regex]::Matches($prev, '\{"i":(\d+),"t":"((?:[^"\\]|\\.)*)"')) {
+        $n = [int]$m.Groups[1].Value
+        $oldIds[$m.Groups[2].Value] = $n
+        if ($n -ge $nextId) { $nextId = $n + 1 }
+    }
+    if ($AddToExisting) {
+        $body = $prev.Substring($prev.IndexOf('"recipes":[{') + 11)
+        $body = $body.Substring(1, $body.Length - 4)          # drop the outer [{ ... }]}
+        $prevObjs = @($body -split '\},\{"i":' | ForEach-Object -Begin { $f = $true } -Process {
+            if ($f) { $f = $false; '{' + $_ + '}' } else { '{"i":' + $_ + '}' }
+        })
+    }
+}
+elseif ($AddToExisting) { throw "-AddToExisting needs an existing $outJson" }
+
+# Each entry: difficulty, standing, order, json. Output is easiest first, most popular
+# first within a level; "order" keeps ties where they were.
+$entries = New-Object 'System.Collections.Generic.List[object]'
+$seq = 0
+if ($AddToExisting) {
+    $haveKeys = @{}
+    foreach ($t in $oldIds.Keys) { $haveKeys[[Dish.Builder]::NormTitle([regex]::Unescape($t))] = $true }
+    foreach ($o in $prevObjs) {
+        $entries.Add(@([int]([regex]::Match($o, '"df":(\d+)').Groups[1].Value),
+                       [int]([regex]::Match($o, '"tp":(\d+)').Groups[1].Value), $seq++, $o))
+    }
+    $final = @($final | Where-Object { -not $haveKeys.ContainsKey([Dish.Builder]::NormTitle($_.Title)) })
+    Write-Host ("Kept all {0} existing recipes; adding {1} new ones." -f $prevObjs.Count, $final.Count) -ForegroundColor Green
+}
+foreach ($r in ($final | Sort-Object { $_.Diff }, { -$_.Top }, { -$_.Quality })) {
+    $tk = [Dish.Builder]::Esc($r.Title)
+    if ($oldIds.ContainsKey($tk)) { $r.Id = $oldIds[$tk]; $oldIds.Remove($tk) } else { $r.Id = $nextId++ }
+    $entries.Add(@($r.Diff, $r.Top, $seq++, [Dish.Builder]::ToJson($r)))
+}
+
 $sb = New-Object System.Text.StringBuilder
-[void]$sb.Append('{"built":"').Append((Get-Date).ToString('yyyy-MM-dd')).Append('","count":').Append($final.Count)
+[void]$sb.Append('{"built":"').Append((Get-Date).ToString('yyyy-MM-dd')).Append('","count":').Append($entries.Count)
 [void]$sb.Append(',"excluded":').Append([Dish.Builder]::Arr($exclude))
-[void]$sb.Append(',"rules":').Append([Dish.Builder]::Arr(@('anything spicy', 'over 45 minutes', 'hard-to-find ingredients')))
+[void]$sb.Append(',"rules":').Append([Dish.Builder]::Arr([string[]]@('anything spicy', 'over 45 minutes', 'hard-to-find ingredients')))
 [void]$sb.Append(',"recipes":[')
 $first = $true
-# ranked easiest first, most popular first within a level
-foreach ($r in ($final | Sort-Object { $_.Diff }, { -$_.Top }, { -$_.Quality })) {
-    $r.Id = $id++
+foreach ($e in ($entries | Sort-Object { $_[0] }, { -$_[1] }, { $_[2] })) {
     if (-not $first) { [void]$sb.Append(',') }
-    [void]$sb.Append([Dish.Builder]::ToJson($r))
+    [void]$sb.Append($e[3])
     $first = $false
 }
 [void]$sb.Append(']}')

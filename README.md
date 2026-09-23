@@ -1,7 +1,7 @@
 # Mom's Dinner Planner
 
 A dinner picker for a mom who wants easy weeknight meals that are good for her
-bones. It picks a week of dinners from **3,818 recipes that take 45 minutes or
+bones. It picks a week of dinners from **3,845 recipes that take 45 minutes or
 less**, keeps summer and winter meals separate, and favors foods rich in calcium,
 vitamin D, vitamin K, magnesium and protein. It also builds a shopping list
 grouped by supermarket aisle.
@@ -14,7 +14,8 @@ It comes in three forms, all built from the same recipes:
 | Phone app | `docs\` published as a web page | An iPhone, installed on the home screen |
 | Single-file phone layout | `MealPlanner.mobile.html` | Trying the phone layout on a PC |
 
-The recipes came from `archive.zip` (62,126 recipes). Everything that isn't a
+The recipes came from `archive.zip` (62,126 recipes), plus 27 from a smaller
+Allrecipes download in `archive2.zip` (1,149 recipes, mostly desserts and sides). Everything that isn't a
 quick, ordinary dinner was filtered out: desserts and baking, anything over 45
 minutes, hard-to-find ingredients, and the foods on the never-show list
 (cottage cheese, liver, eggplant, curry). Cooking times are recalculated from
@@ -88,6 +89,14 @@ Edit the sources in `app\` and `build\`, then run the matching build:
 | Any of the above, and the `.exe` should match | `python build\build_exe.py` | New `dist_exe\Mom's Dinner Planner.exe` |
 | The app icon (`build\make_icon.py`) | `python build\make_icon.py`, then the mobile and exe builds | New `app\icon.ico` and the phone icons in `app\pwa\` |
 
+**Careful with a full rebuild.** The 3,818 original recipes were built on
+2026-09-15, and the rules in `Builder.cs` have been made stricter since (for example,
+nothing the archive tags as spicy). A plain `Rebuild.ps1` applies today's rules to
+everything and leaves only about 2,000 recipes. To add recipes without touching the
+existing ones, run `Rebuild.ps1 -AddToExisting`: it keeps `data\recipes.json` as it
+is and adds only what's new in `archive2.zip`. Either way, recipe numbers are kept
+from the previous build, so saved hearts and the current plan stay put.
+
 So after changing the recipes or the never-show list, run `Rebuild.ps1` first and
 then `build_mobile.py`, because the phone version reads the recipes that
 `Rebuild.ps1` just wrote. `Rebuild.ps1` needs `archive.zip` and Windows
@@ -112,6 +121,7 @@ browser after building. To try the phone version the way a phone gets it, run
 | `app\pwa\` | What makes the phone version installable: icons, manifest, offline support |
 | `app\desktop_app.py`, `app\icon.ico` | The window and icon for the `.exe` |
 | `build\` | The build scripts, the filtering rules (`Builder.cs`, `Csv.cs`) and `exclusions.txt` |
-| `data\recipes.json` | The 3,818 finished recipes |
+| `data\recipes.json` | The 3,845 finished recipes |
 | `archive.zip` | The original 62,126 recipes |
+| `archive2.zip` | A second, smaller recipe download (1,149 recipes; they state servings) |
 | `MealPlanner.html`, `MealPlanner.mobile.html`, `docs\`, `dist_exe\` | Built outputs. Don't edit. |
