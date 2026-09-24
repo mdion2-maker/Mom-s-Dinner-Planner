@@ -1,8 +1,8 @@
 /* Lets the planner open with no signal once it has been loaded one time.
    Network first, so a newly published version is picked up as soon as there is
    a connection; the saved copy is only used when the network fails.
-   20260923121104 is filled in by build\build_mobile.py on every build. */
-const CACHE = "dinner-planner-20260923121104";
+   20260923154437 is filled in by build\build_mobile.py on every build. */
+const CACHE = "dinner-planner-20260923154437";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {

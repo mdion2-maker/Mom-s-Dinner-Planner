@@ -1,7 +1,7 @@
 # Mom's Dinner Planner
 
 A dinner picker for a mom who wants easy weeknight meals that are good for her
-bones. It picks a week of dinners from **3,845 recipes that take 45 minutes or
+bones. It picks a week of dinners from **13,845 recipes that take 45 minutes or
 less**, keeps summer and winter meals separate, and favors foods rich in calcium,
 vitamin D, vitamin K, magnesium and protein. It also builds a shopping list
 grouped by supermarket aisle.
@@ -15,7 +15,9 @@ It comes in three forms, all built from the same recipes:
 | Single-file phone layout | `MealPlanner.mobile.html` | Trying the phone layout on a PC |
 
 The recipes came from `archive.zip` (62,126 recipes), plus 27 from a smaller
-Allrecipes download in `archive2.zip` (1,149 recipes, mostly desserts and sides). Everything that isn't a
+Allrecipes download in `archive2.zip` (1,149 recipes, mostly desserts and sides), plus
+10,000 home-cook dinners from `archive3.zip` (the RecipeNLG collection, 2.2 million
+recipes). Everything that isn't a
 quick, ordinary dinner was filtered out: desserts and baking, anything over 45
 minutes, hard-to-find ingredients, and the foods on the never-show list
 (cottage cheese, liver, eggplant, curry). Cooking times are recalculated from
@@ -52,9 +54,16 @@ with the reason for the score. From there:
 
 - **Recipe** shows the ingredients and steps. Use **− / +** under *Servings* to
   change how many people it's for; the card, the ingredient amounts and the
-  shopping list all follow. The recipes don't say how many they serve, so the
-  number is estimated from portion-sized ingredients like "4 chicken breasts" and
-  otherwise assumed to be 4 (the recipe says which).
+  shopping list all follow (1 to 12). When a recipe doesn't say how many it serves,
+  the number is estimated: from portion-sized ingredients like "4 chicken breasts",
+  otherwise from how much meat or fish it uses (about a quarter pound per person,
+  half that for bone-in pieces), otherwise from the pasta or rice, and only then
+  assumed to be 4. The note beside *Servings* says which, and quotes the ingredient
+  the estimate came from.
+- **Too much of one thing?** Every ingredient with an amount has its own **− / +**.
+  Each tap changes just that ingredient by a quarter (from a quarter of the amount up
+  to double), on top of the servings. A note under it says how it was changed, and
+  *Put every amount back* undoes them all. The shopping list follows these too.
 - **Swap** replaces that one meal with another. **Save** (the heart) keeps it under
   *Saved*.
 - **Shopping list** gathers every ingredient in the plan by aisle, with copy and
@@ -94,7 +103,11 @@ Edit the sources in `app\` and `build\`, then run the matching build:
 nothing the archive tags as spicy). A plain `Rebuild.ps1` applies today's rules to
 everything and leaves only about 2,000 recipes. To add recipes without touching the
 existing ones, run `Rebuild.ps1 -AddToExisting`: it keeps `data\recipes.json` as it
-is and adds only what's new in `archive2.zip`. Either way, recipe numbers are kept
+is and adds up to `-MaxNew` (3,000) recipes that are new in `archive2.zip` and
+`archive3.zip`. Reading `archive3.zip` takes about 15 minutes; `-SkipArchive3` skips it,
+and `-AddToExisting -SkipArchive3 -MaxNew 0` just puts a changed `template.html` into
+`MealPlanner.html` without adding anything. Don't run a plain `-AddToExisting` twice
+in a row unless you want more: each run adds a *different* batch (that is how the second 7,000 were added, with `-MaxNew 7000`). Either way, recipe numbers are kept
 from the previous build, so saved hearts and the current plan stay put.
 
 So after changing the recipes or the never-show list, run `Rebuild.ps1` first and
@@ -121,7 +134,8 @@ browser after building. To try the phone version the way a phone gets it, run
 | `app\pwa\` | What makes the phone version installable: icons, manifest, offline support |
 | `app\desktop_app.py`, `app\icon.ico` | The window and icon for the `.exe` |
 | `build\` | The build scripts, the filtering rules (`Builder.cs`, `Csv.cs`) and `exclusions.txt` |
-| `data\recipes.json` | The 3,845 finished recipes |
+| `data\recipes.json` | The 13,845 finished recipes |
 | `archive.zip` | The original 62,126 recipes |
 | `archive2.zip` | A second, smaller recipe download (1,149 recipes; they state servings) |
+| `archive3.zip` | RecipeNLG, 2.2 million home-cook recipes (no times, servings or categories). 666 MB, so it is kept out of git; download it again from Kaggle to rebuild |
 | `MealPlanner.html`, `MealPlanner.mobile.html`, `docs\`, `dist_exe\` | Built outputs. Don't edit. |

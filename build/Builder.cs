@@ -197,6 +197,97 @@ namespace Dish
             return total;
         }
 
+        // ------------------------------------------------- third source (archive3.zip)
+        // RecipeNLG: 2.2 million recipes, most typed in by home cooks, so the titles are
+        // rough ("Jewell Ball'S Chicken", "Reeses Cups(Candy)  ") and servings are only
+        // ever mentioned inside the directions ("Yields 6 servings.").
+
+        public static string CleanTitle(string t)
+        {
+            if (t == null) return "";
+            t = Regex.Replace(t, @"\s+", " ").Trim();
+            t = Regex.Replace(t, @"(?<=[a-z])'S\b", "'s");            // "Ball'S" -> "Ball's"
+            // "(Candy)", "(Serves 6)", "(A Great Dish for Those Whose Favorite Meal Is Fish.)"
+            string bare = Regex.Replace(t, @"\s*\([^)]*\)?", " ").Trim();
+            if (bare.Length >= 3) t = Regex.Replace(bare, @"\s+", " ");
+            // cookbooks.com capitalises every word: "Chicken And Rice With Peas" -> "Chicken and Rice with Peas"
+            t = Regex.Replace(t, @"(?<=\S )(And|Or|With|Of|In|On|A|An|The|For|To|From|Over)(?= )",
+                m => m.Value.ToLowerInvariant());
+            return t;
+        }
+
+        static string[] SweetTitle = new string[] {
+            "pie", "tart", "bar", "bars", "square", "squares", "delight", "dream", "heaven", "surprise",
+            "jumble", "swirl", "swirls", "roll", "rolls", "bread", "loaf", "dessert", "treat"
+        };
+        static string[] SnackTitle = new string[] {
+            "ball", "balls", "bread", "spread", "delight", "bites", "puffs", "squares", "pinwheels", "log"
+        };
+        static Regex CupsOfSugar = new Regex(@"(?:^|\s)[\d/ ]+\s*(?:c\.|cups?)\s*(?:of\s+)?(?:white\s+|granulated\s+|brown\s+|powdered\s+)?sugar", RegexOptions.Compiled);
+
+        /// <summary>Home cooks write "1 c. sugar" where the rules above expect "white sugar", and
+        /// a pie with egg whites in it would pass as a main. For this source, then, a dinner
+        /// must have real protein (meat, fish, beans, tofu), no sugar by the cup, no vanilla,
+        /// and a title that doesn't sound like a sweet unless it names that protein.</summary>
+        public static bool NotHomeDinner(string title, string[] ings)
+        {
+            string tl = title.ToLowerInvariant();
+            string ingText = string.Join(" ; ", ings).ToLowerInvariant();
+            string noBroth = Regex.Replace(tl + " ; " + ingText, @"(chicken|beef|turkey|fish|seafood|shrimp) (broth|stock|bouillon|base|soup|gravy)", "$2")
+                .Replace("scalloped", "baked");                    // scalloped corn is not scallops
+            if (!HasAny(noBroth, RealProtein)) return true;
+            if (Has(ingText, "vanilla")) return true;
+            foreach (string line in ings) if (CupsOfSugar.IsMatch(" " + line.ToLowerInvariant())) return true;
+            string lastWord = HeadNoun(tl);
+            if (Array.IndexOf(SweetTitle, lastWord) >= 0 && !HasAny(tl, RealProtein) && !Has(tl, "pot pie")) return true;
+            // party food, even with sausage in it ("Cheese Sausage Balls", "Ham Delight")
+            if (Array.IndexOf(SnackTitle, lastWord) >= 0 && !Has(tl, "meat")) return true;
+            return false;
+        }
+
+        // "Serves 4", "serves 4 to 6", "Makes 6 servings", "Yield: 8 portions", "feeds 4 people".
+        // A bare "makes 30" is usually cookies or balls, so makes/yields need a serving word.
+        static Regex ServesRx = new Regex(
+            @"\b(?:serves|serving|feeds)\s*:?\s*(?:about\s+|approx\.?\s+)?(\d{1,2})(?:\s*(?:to|-|or)\s*(\d{1,2}))?" +
+            @"|\b(?:makes|yields?|yield:)\s*:?\s*(?:about\s+|approx\.?\s+)?(\d{1,2})(?:\s*(?:to|-|or)\s*(\d{1,2}))?\s*(?:servings?|portions?|people|persons|helpings)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>Servings the recipe itself states in its directions; 0 when it doesn't say.
+        /// A range ("serves 4 to 6") gives its middle, rounded down.</summary>
+        public static int StatedServings(string title, string[] steps)
+        {
+            if (!string.IsNullOrEmpty(title)) { int t = StatedServings(null, new string[] { title }); if (t > 0) return t; }
+            foreach (string s in steps)
+            {
+                Match m = ServesRx.Match(s);
+                if (!m.Success) continue;
+                string a = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[3].Value;
+                string b = m.Groups[1].Success ? m.Groups[2].Value : m.Groups[4].Value;
+                int lo = int.Parse(a), hi = b.Length > 0 ? int.Parse(b) : lo;
+                if (hi < lo) hi = lo;
+                int n = (lo + hi) / 2;
+                if (n >= 1 && n <= 12) return n;
+            }
+            return 0;
+        }
+
+        /// <summary>Cheap first pass over the 2.2 million rows so the full rules only run on
+        /// plausible dinners. Plain substring checks: stricter than the real rules (which
+        /// match whole words), so it can only drop recipes the real rules might have kept,
+        /// never let through one they would drop.</summary>
+        public static bool QuickSkip(string title, string[] ings, string[] steps, string[] userExclude)
+        {
+            if (ings.Length < 4 || steps.Length < 1) return true;
+            string tl = title.ToLowerInvariant();
+            for (int i = 0; i < NotDinner.Length; i++) if (tl.Contains(NotDinner[i])) return true;
+            string all = tl + " " + string.Join(" ", ings).ToLowerInvariant() + " " + string.Join(" ", steps).ToLowerInvariant();
+            if (!all.Contains("min") && !all.Contains("hour")) return true;   // no stated time: the rules drop it anyway
+            for (int i = 0; i < userExclude.Length; i++) if (all.Contains(userExclude[i])) return true;
+            for (int i = 0; i < HotStuff.Length; i++) if (all.Contains(HotStuff[i])) return true;
+            for (int i = 0; i < MakeAhead.Length; i++) if (all.Contains(MakeAhead[i])) return true;
+            return NotHomeDinner(title, ings);
+        }
+
         // ------------------------------------------------------------ time model
         static Regex TimeRx = new Regex(
             @"(\d+(?:\.\d+)?(?:\s+\d/\d)?|\d/\d)\s*(?:(?:to|-|–|—|or|and)\s*(\d+(?:\.\d+)?(?:\s+\d/\d)?|\d/\d)\s*)?(seconds?|secs?|minutes?|mins?|hours?|hrs?)",
@@ -400,7 +491,7 @@ namespace Dish
         // Only a non-dinner when the title is basically just this thing
         // ("Fresh Salsa" is out, "Fish Tacos with Corn Salsa" stays in).
         public static string[] SideOnly = new string[] {
-            "salsa","dip","pesto","aioli","tzatziki","hummus","guacamole","relish","pickle","pickled","jam",
+            "salsa","dip","pesto","aioli","tzatziki","hummus","hommus","guacamole","relish","pickle","pickled","jam",
             "jelly","preserve","syrup","gravy","roux","sauce","dressing","vinaigrette","marinade",
             "stock","broth","bruschetta","crostini","canape","cracker","rub","glaze","mayonnaise",
             "ketchup","mustard","spread","topping","filling","batter","icing","seasoning","garnish","puree"
@@ -657,9 +748,9 @@ namespace Dish
             "sriracha","sambal","sambal oelek","chili paste","chile paste","chili garlic sauce",
             "chili oil","chile oil","hot sauce","tabasco","frank's red hot","buffalo sauce","wing sauce",
             "harissa","gochugaru","gochujang","kimchi","horseradish","wasabi","pepper jack","hot italian sausage",
-            "andouille","chorizo","spicy","hot chile","hot chili","arrabbiata","diavolo","diablo","piri piri",
+            "andouille","chorizo","hot sausage","spicy","hot chile","hot chili","arrabbiata","diavolo","diablo","piri piri",
             "peri peri","jerk seasoning","jerk paste","cajun seasoning","creole seasoning","blackened seasoning",
-            "old bay hot","chili crisp","calabrian","pepperoncini","giardiniera","rotel","hatch chile",
+            "old bay hot","chili crisp","calabrian","pepperoncini","giardiniera","rotel","ro-tel","hatch chile",
             "green chile","poblano hot","fresno","cherry pepper","banana pepper hot","szechuan peppercorn",
             "five alarm","firecracker","volcano","atomic","hot honey","nashville hot","buffalo chicken",
             "buffalo dip","chili crunch","spicy mayo","bang bang","dynamite sauce","wasabi mayo"

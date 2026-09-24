@@ -1,22 +1,25 @@
 # Rebuilds the recipe database used by MealPlanner.html
 #
 #   Reads   : archive.zip  (recipes_extended.csv), archive2.zip (recipes.csv,
-#             test_recipes.csv; optional)  +  build\exclusions.txt
+#             test_recipes.csv; optional), archive3.zip (recipes_data.csv; optional)
+#             +  build\exclusions.txt
 #   Writes  : data\recipes.json   and   MealPlanner.html (data is embedded)
 #
 # Run it by right-clicking this file and choosing "Run with PowerShell",
 # or from a terminal:   powershell -ExecutionPolicy Bypass -File build\Rebuild.ps1
 #
 # -AddToExisting leaves every recipe already in data\recipes.json untouched and only adds
-# the ones from archive2.zip. The current recipes were built on 2026-09-15 with looser
+# up to -MaxNew new ones from archive2.zip and archive3.zip. The current recipes were built on 2026-09-15 with looser
 # rules than Builder.cs has now, so a full rebuild would remove about half of them.
 
 param(
     [int]$MaxRecipes = 5000,
     [switch]$Explain,     # print sample rejections + accepted samples for tuning
     [switch]$IgnoreSpicyLabel, # drop only real heat, not the archive's noisy "spicy" tag
-    [switch]$AddToExisting     # keep data\recipes.json exactly as is; only add new recipes
-                               # from archive2.zip that it doesn't already have
+    [switch]$AddToExisting,    # keep data\recipes.json exactly as is; only add new recipes
+                               # from archive2.zip / archive3.zip that it doesn't already have
+    [int]$MaxNew = 3000,       # with -AddToExisting: at most this many new recipes
+    [switch]$SkipArchive3      # don't read archive3.zip (it takes several minutes)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,6 +137,34 @@ if (Test-Path $zip2) {
     }
     $src.Csv.Dispose(); $src.Arch.Dispose()
 }
+# ---- source 3: archive3.zip (recipes_data.csv, RecipeNLG) ------------
+# 2.2 million home-cook recipes with no times, categories or servings columns. A cheap
+# first pass (Builder.QuickSkip) throws out the obvious non-dinners so the full rules
+# only run on the rest. Servings come from the directions when they say ("Serves 6").
+# Optional, and too big for GitHub, so it is not in the repository.
+$zip3 = Join-Path $root 'archive3.zip'
+if ((Test-Path $zip3) -and -not $SkipArchive3) {
+    Write-Host "Reading recipes from archive3.zip (2.2 million rows; several minutes)..." -ForegroundColor Cyan
+    $src = Open-Csv $zip3 'recipes_data.csv'
+    $ix = $src.Idx
+    $cT = $ix['title']; $cI = $ix['ingredients']; $cD = $ix['directions']
+    $scanned = 0
+    while ($true) {
+        $row = $src.Csv.ReadRow()
+        if ($null -eq $row) { break }
+        if ($row.Length -le $src.Max) { continue }
+        $scanned++
+        if ($scanned % 200000 -eq 0) {
+            Write-Host ("  {0,9:N0} scanned, {1,6} kept  ({2:N0}s)" -f $scanned, $kept.Count, $sw.Elapsed.TotalSeconds)
+        }
+        $title = [Dish.Builder]::CleanTitle($row[$cT])
+        $ings = [Dish.Builder]::ParseArray($row[$cI])
+        $steps = [Dish.Builder]::ParseArray($row[$cD])
+        if ([Dish.Builder]::QuickSkip($title, $ings, $steps, $exclude)) { continue }
+        Add-Candidate $title '' '' '' $ings $steps $null 0 ([Dish.Builder]::StatedServings($row[$cT], $steps))
+    }
+    $src.Csv.Dispose(); $src.Arch.Dispose()
+}
 Write-Host ("Read {0} recipes in {1:N0}s; {2} passed every rule." -f $rows, $sw.Elapsed.TotalSeconds, $kept.Count) -ForegroundColor Green
 
 "" ; "--- why recipes were dropped ---"
@@ -156,6 +187,18 @@ foreach ($r in $kept) {
 }
 $unique = @($byKey.Values)
 Write-Host ("After removing near-duplicate titles: {0}" -f $unique.Count) -ForegroundColor Green
+
+# ---- with -AddToExisting, set aside what recipes.json already has ----
+# (before trimming, so -MaxNew counts only recipes that are really new)
+$haveKeys = @{}
+if ($AddToExisting -and (Test-Path $outJson)) {
+    foreach ($m in [regex]::Matches([System.IO.File]::ReadAllText($outJson), '\{"i":\d+,"t":"((?:[^"\\]|\\.)*)"')) {
+        $haveKeys[[Dish.Builder]::NormTitle([regex]::Unescape($m.Groups[1].Value))] = $true
+    }
+    $unique = @($unique | Where-Object { -not $haveKeys.ContainsKey([Dish.Builder]::NormTitle($_.Title)) })
+    $MaxRecipes = $MaxNew
+    Write-Host ("Not already in recipes.json: {0}; adding up to {1}." -f $unique.Count, $MaxNew) -ForegroundColor Green
+}
 
 # ---- trim to MaxRecipes, keeping variety across season x dish type ---
 $final = $unique
@@ -204,7 +247,7 @@ $final | Group-Object { [math]::Floor($_.Bone / 10) * 10 } | Sort-Object Name | 
 "" ; "--- highest bone-health picks ---"
 $final | Sort-Object Bone -Descending | Select-Object -First 15 | ForEach-Object { "{0,3}  {1,-52} {2} min  [{3}]" -f $_.Bone, $_.Title, $_.TotalMin, ($_.BoneWhy -join ', ') }
 "" ; "--- random accepted samples ---"
-$final | Get-Random -Count ([math]::Min(25, $final.Count)) | ForEach-Object {
+$(if ($final.Count -gt 0) { $final | Get-Random -Count ([math]::Min(25, $final.Count)) }) | ForEach-Object {
     "{0,-50} {1,-22} {2,-7} {3,-7} {4,2}+{5,2}={6,2}m  bone {7}" -f $_.Title, $_.Base, $_.Temp, $_.Season, $_.PrepMin, $_.CookMin, $_.TotalMin, $_.Bone
 }
 
@@ -236,13 +279,10 @@ elseif ($AddToExisting) { throw "-AddToExisting needs an existing $outJson" }
 $entries = New-Object 'System.Collections.Generic.List[object]'
 $seq = 0
 if ($AddToExisting) {
-    $haveKeys = @{}
-    foreach ($t in $oldIds.Keys) { $haveKeys[[Dish.Builder]::NormTitle([regex]::Unescape($t))] = $true }
     foreach ($o in $prevObjs) {
         $entries.Add(@([int]([regex]::Match($o, '"df":(\d+)').Groups[1].Value),
                        [int]([regex]::Match($o, '"tp":(\d+)').Groups[1].Value), $seq++, $o))
     }
-    $final = @($final | Where-Object { -not $haveKeys.ContainsKey([Dish.Builder]::NormTitle($_.Title)) })
     Write-Host ("Kept all {0} existing recipes; adding {1} new ones." -f $prevObjs.Count, $final.Count) -ForegroundColor Green
 }
 foreach ($r in ($final | Sort-Object { $_.Diff }, { -$_.Top }, { -$_.Quality })) {
